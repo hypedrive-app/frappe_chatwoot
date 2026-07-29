@@ -49,13 +49,16 @@ class TestChatwootClientSettings(FrappeTestCase):
             cw._settings()
 
     def test_missing_token_raises_not_configured(self):
+        from frappe.utils.password import remove_encrypted_password
+
         _configure_settings()
-        # Clear the password directly via the low-level setter to simulate
-        # "token never configured" without tripping the form validator.
+        # Password fields live in __Auth, not the doctype's own table, so
+        # db.set_value on api_token does not clear what get_password() reads.
+        remove_encrypted_password("Chatwoot Settings", "Chatwoot Settings", "api_token")
         frappe.db.set_value("Chatwoot Settings", "Chatwoot Settings", "api_token", "")
-        # Re-fetch AFTER blanking: get_password() returns the in-memory field
-        # when it is set (base_document.get_password), so a doc loaded before
-        # the write still carries the old token and the guard never fires.
+        # Re-fetch after both writes: get_password() returns the in-memory field
+        # when it is set (base_document.get_password), so a doc loaded earlier
+        # still carries the old token and the guard never fires.
         settings = frappe.get_single("Chatwoot Settings")
         with self.assertRaises(cw.ChatwootNotConfigured):
             cw._api_token(settings)
