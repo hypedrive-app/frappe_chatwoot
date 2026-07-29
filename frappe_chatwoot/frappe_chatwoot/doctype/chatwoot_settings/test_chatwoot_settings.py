@@ -62,10 +62,15 @@ class TestChatwootSettings(FrappeTestCase):
 
         settings = frappe.get_single("Chatwoot Settings")
         settings.enabled = 1
-        settings.base_url = ""
+        settings.base_url = "https://support.hypedrive.app"
         settings.account_id = 1
         settings.api_token = "dummy-token-for-test"
         settings.save()
+
+        # base_url is mandatory while enabled, so blank it below the form
+        # validator to reach the runtime guard — the state a half-migrated or
+        # hand-edited row can still be in.
+        frappe.db.set_value("Chatwoot Settings", "Chatwoot Settings", "base_url", "")
 
         with self.assertRaises(ChatwootNotConfigured):
             _settings()

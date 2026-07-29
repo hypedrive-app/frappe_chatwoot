@@ -28,22 +28,22 @@
    "fieldname": "base_url",
    "fieldtype": "Data",
    "label": "Base URL",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.enabled"
   },
   {
-   "description": "User Access Token for a dedicated service agent (NOT the bot token or platform token — both are rejected by conversation read endpoints). Sent as the api_access_token header.",
+   "description": "User Access Token for a dedicated service agent (NOT the bot token or platform token \u2014 both are rejected by conversation read endpoints). Sent as the api_access_token header.",
    "fieldname": "api_token",
    "fieldtype": "Password",
    "label": "API Token",
    "length": 300,
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.enabled"
   },
   {
    "default": "1",
    "fieldname": "account_id",
    "fieldtype": "Int",
    "label": "Account ID",
-   "reqd": 1
+   "mandatory_depends_on": "eval:doc.enabled"
   },
   {
    "fieldname": "column_break_main",
@@ -57,7 +57,7 @@
   },
   {
    "default": "20",
-   "description": "Self-imposed cache TTL for live Chatwoot reads (Chatwoot exposes no rate-limit headers — see README). Applies to conversation list/detail and message list reads.",
+   "description": "Self-imposed cache TTL for live Chatwoot reads (Chatwoot exposes no rate-limit headers \u2014 see README). Applies to conversation list/detail and message list reads.",
    "fieldname": "cache_ttl_seconds",
    "fieldtype": "Int",
    "label": "Cache TTL (seconds)"
