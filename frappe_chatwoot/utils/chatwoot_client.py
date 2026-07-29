@@ -239,9 +239,12 @@ def _get(path: str, params: dict | None = None, *, cache_seconds: int | None = N
         if _os.environ.get("CHATWOOT_CACHE_PROBE"):
             _c = frappe.cache()
             _mk = _c.make_key(cache_key)
-            print("PROBE mk=%r in_local=%s local_type=%s redis_direct=%r readback=%r" % (
-                _mk, _mk in frappe.local.cache, type(frappe.local.cache).__name__,
-                _c.get(_mk), _c.get_value(cache_key)))
+            _direct = frappe.local.cache.get(_mk)
+            print("PROBE same_obj=%s local_direct=%r gv_default=%r gv_nolocal=%r expires=%r" % (
+                _c is frappe.cache(), _direct,
+                _c.get_value(cache_key),
+                _c.get_value(cache_key, use_local_cache=False),
+                _c.get_value(cache_key, expires=True)))
     return data
 
 
