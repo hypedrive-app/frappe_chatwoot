@@ -80,13 +80,11 @@ class TestChatwootClientCaching(FrappeTestCase):
         import json as _json
         mock_get.return_value = _mock_response(200, {"data": {"payload": []}})
 
-        _k = cw._cache_key("get", "/conversations", _json.dumps({"page": 1, "status": "all"}, sort_keys=True))
-        # Is the write reaching redis at all, and does it survive immediately?
-        frappe.cache().set_value(_k, "SENTINEL", expires_in_sec=20)
-        print("PROBE sentinel immediately ->", repr(frappe.cache().get_value(_k)))
         cw.list_conversations()
-        print("PROBE after first call, get_value ->", repr(frappe.cache().get_value(_k)))
-        print("PROBE ttl:", cw._cache_ttl(), "settings ttl field:", frappe.get_single("Chatwoot Settings").cache_ttl_seconds)
+        _k = cw._cache_key("get", "/conversations", _json.dumps({"page": 1, "status": "all"}, sort_keys=True))
+        print("PROBE key:", _k)
+        print("PROBE after first call ->", repr(frappe.cache().get_value(_k)))
+        print("PROBE ttl:", cw._cache_ttl())
         cw.list_conversations()
 
         self.assertEqual(mock_get.call_count, 1)

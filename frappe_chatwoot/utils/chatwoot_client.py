@@ -196,7 +196,13 @@ def _get(path: str, params: dict | None = None, *, cache_seconds: int | None = N
     if ttl > 0:
         cached = frappe.cache().get_value(cache_key)
         if cached is not None:
-            return json.loads(cached)
+            try:
+                return json.loads(cached)
+            except (TypeError, ValueError):
+                # A cache entry we can't decode (corrupt, truncated, or written
+                # by an older key format) must not take the caller down with a
+                # raw JSONDecodeError — drop it and fall through to a live read.
+                frappe.cache().delete_value(cache_key)
 
     url = f"{settings.base_url}/api/v1/accounts/{settings.account_id}{path}"
     try:
