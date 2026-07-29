@@ -335,7 +335,18 @@ class TestChatwootClientDrainLoop(FrappeTestCase):
 
         # First call establishes start_time; subsequent calls simulate time
         # jumping past the wall-clock budget immediately.
-        mock_monotonic.side_effect = [0, 0, cw.DRAIN_WALL_CLOCK_SECONDS + 1]
+        #
+        # Deliberately a callable, not side_effect=[...]: this patches the shared
+        # `time` module, and on Frappe v16 the framework's own ClientCache calls
+        # time.monotonic() too (redis_wrapper's expiry checks). A fixed-length
+        # list gets drained by those internal calls and the drain loop then dies
+        # on StopIteration instead of exercising the bound.
+        clock = iter([0, 0])
+
+        def fake_monotonic():
+            return next(clock, cw.DRAIN_WALL_CLOCK_SECONDS + 1)
+
+        mock_monotonic.side_effect = fake_monotonic
 
         result = cw.list_messages_incremental(1, since_id=0)
 
