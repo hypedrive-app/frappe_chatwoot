@@ -115,6 +115,18 @@ def get_conversations_for_contact(reference_doctype: str, reference_name: str) -
     return results
 
 
+def _annotate_direction(messages: list[dict]) -> list[dict]:
+    # Normalize the numeric message_type into a readable direction, and drop
+    # the private/internal-note distinction cleanly for FE consumption.
+    # Note: private messages are already stripped by
+    # chatwoot_client.list_messages/_drop_private_messages before this point
+    # — this is purely a display-shape normalization, not a filtering step.
+    type_map = {0: "incoming", 1: "outgoing", 2: "activity", 3: "template"}
+    for m in messages:
+        m["direction"] = type_map.get(m.get("message_type"), "unknown")
+    return messages
+
+
 @frappe.whitelist()
 def get_messages(conversation_id: int, before: int = None) -> dict:
     """Live message page for one conversation. Caller must already know the
@@ -127,18 +139,30 @@ def get_messages(conversation_id: int, before: int = None) -> dict:
         frappe.throw("Chatwoot integration is not enabled")
     conversation_id = frappe.utils.cint(conversation_id)
     raw = cw.list_messages(conversation_id, before=frappe.utils.cint(before) if before else None)
-    messages = raw.get("payload") or []
-
-    # Normalize the numeric message_type into a readable direction, and drop
-    # the private/internal-note distinction cleanly for FE consumption.
-    type_map = {0: "incoming", 1: "outgoing", 2: "activity", 3: "template"}
-    for m in messages:
-        m["direction"] = type_map.get(m.get("message_type"), "unknown")
+    messages = _annotate_direction(raw.get("payload") or [])
 
     return {
         "meta": raw.get("meta") or {},
         "messages": messages,
     }
+
+
+@frappe.whitelist()
+def get_new_messages(conversation_id: int, since_id: int = None) -> dict:
+    """Incremental poll: every message newer than `since_id`, using the
+    bounded after=-cursor drain loop in chatwoot_client.list_messages_incremental
+    (see that function's docstring for the pagination-loss fix this closes).
+    Callers should persist `max_id_seen` and pass it back as `since_id` on
+    the next poll. `truncated=True` means the drain hit its page/time bound
+    with more data potentially still pending — call again immediately (or on
+    the very next poll tick) rather than treating this as caught-up."""
+    if not is_chatwoot_enabled():
+        frappe.throw("Chatwoot integration is not enabled")
+    conversation_id = frappe.utils.cint(conversation_id)
+    since_id = frappe.utils.cint(since_id) if since_id else None
+    result = cw.list_messages_incremental(conversation_id, since_id=since_id)
+    result["messages"] = _annotate_direction(result.get("messages") or [])
+    return result
 
 
 @frappe.whitelist()

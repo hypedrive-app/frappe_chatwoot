@@ -20,11 +20,36 @@ source of every shape/quirk referenced below):
   a short TTL cache (Chatwoot Settings.cache_ttl_seconds, default 20s) using
   frappe.cache() (redis) so concurrent Desk/CRM tabs don't each trigger a
   fresh upstream call.
-- message pagination is via `before=<message id>`, walking backward; there is
-  no forward/after cursor (matches the "load older on scroll-up" UI model).
+- Message pagination supports BOTH directions:
+    * `before=<message id>` — walk backward (older history, scroll-up UI).
+    * `after=<message id>`  — walk forward/ascending (incremental polling).
+  Verified against Chatwoot's own `message_finder.rb`: both params are
+  supported server-side, and each page is hard-capped at 100 rows with NO
+  truncation signal (no `total`/`has_more`/`next_cursor` anywhere in the
+  response). A single page coming back with exactly 100 rows is therefore
+  AMBIGUOUS — it could be the entire delta, or page 1 of many. Naively taking
+  one page and advancing the cursor to its max id causes silent, permanent
+  message loss on any burst > 100 messages (bulk import, reconnect after
+  downtime, a rapid automation). `list_messages_incremental()` below
+  implements the fix: a bounded drain loop that keeps re-fetching with the
+  cursor advanced to the max id seen until a page comes back short (<100),
+  capped at MAX_DRAIN_PAGES pages and DRAIN_WALL_CLOCK_SECONDS wall-clock so
+  a pathological backlog can't run away. An unfinished drain safely resumes
+  on the next poll cycle since the cursor only ever moves forward over
+  confirmed ids.
+- Private/internal Chatwoot notes (agent-only, never sent to the customer)
+  must never reach a CRM/FE consumer — this is a confidentiality invariant,
+  not a preference. Two independent filters are applied:
+    1. `filter_internal_messages=true` query param on the messages endpoint.
+    2. An independent client-side drop of any message where `private` is
+       true, applied AFTER the query param, regardless of whether the
+       param appears to have worked — some self-hosted Chatwoot builds are
+       known to silently ignore this query param, so the query param alone
+       is not sufficient.
 """
 
 import json
+import time
 
 import frappe
 import requests
@@ -32,6 +57,13 @@ import requests
 CACHE_PREFIX = "frappe_chatwoot:v1"
 DEFAULT_TTL = 20
 HTTP_TIMEOUT = 15
+
+# Chatwoot's message_finder.rb hard-caps each page at 100 rows.
+CHATWOOT_PAGE_SIZE = 100
+# Bounded drain-loop guards (see module docstring) — keep well under the
+# scheduler/whitelisted-call's own execution ceiling.
+MAX_DRAIN_PAGES = 5
+DRAIN_WALL_CLOCK_SECONDS = 10
 
 
 class ChatwootNotConfigured(frappe.ValidationError):
@@ -83,6 +115,74 @@ def clear_cache():
         frappe.log_error(title="frappe_chatwoot: cache clear fallback")
 
 
+# ---------------------------------------------------------------------------
+# Chatwoot Log — audit trail (see doctype/chatwoot_log). Best-effort: a
+# logging failure must never mask or replace the real error being reported.
+# ---------------------------------------------------------------------------
+
+
+def _write_log(*, request_type: str, endpoint: str = "", status_code: int | None = None,
+                conversation_id=None, payload=None, error: str = ""):
+    if not frappe.db.exists("DocType", "Chatwoot Log"):
+        return
+    try:
+        doc = frappe.new_doc("Chatwoot Log")
+        doc.request_type = request_type
+        doc.endpoint = endpoint
+        if status_code is not None:
+            doc.status_code = status_code
+        if conversation_id is not None:
+            doc.conversation_id = str(conversation_id)
+        if payload is not None:
+            try:
+                doc.payload = json.dumps(payload)[:100000]
+            except (TypeError, ValueError):
+                doc.payload = json.dumps({"unserializable": str(payload)[:2000]})
+        if error:
+            doc.error = error[:2000]
+        doc.insert(ignore_permissions=True)
+    except Exception:
+        # Logging must never break the caller's real error path.
+        frappe.log_error(title="frappe_chatwoot: Chatwoot Log write failed")
+
+
+def _extract_error_detail(resp) -> str:
+    """Parse Chatwoot's JSON error envelope and return its real message.
+
+    Chatwoot's validation/error responses commonly look like one of:
+      {"message": "..."}
+      {"error": "..."}
+      {"errors": ["...", "..."]}
+      {"errors": {"field": ["..."]}}
+    Falls back to a clipped raw body (e.g. an HTML gateway error page) if the
+    response isn't JSON or doesn't match a known shape.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return (resp.text or "")[:300]
+
+    if not isinstance(body, dict):
+        return (resp.text or "")[:300]
+
+    if body.get("message"):
+        return str(body["message"])[:300]
+    if body.get("error"):
+        return str(body["error"])[:300]
+
+    errors = body.get("errors")
+    if isinstance(errors, list) and errors:
+        return ", ".join(str(e) for e in errors)[:300]
+    if isinstance(errors, dict) and errors:
+        parts = []
+        for field, msgs in errors.items():
+            msgs_str = ", ".join(str(m) for m in msgs) if isinstance(msgs, list) else str(msgs)
+            parts.append(f"{field}: {msgs_str}")
+        return "; ".join(parts)[:300]
+
+    return (resp.text or "")[:300]
+
+
 def _get(path: str, params: dict | None = None, *, cache_seconds: int | None = None):
     """GET against the Chatwoot account API, with short-TTL caching.
 
@@ -108,14 +208,23 @@ def _get(path: str, params: dict | None = None, *, cache_seconds: int | None = N
         )
     except requests.RequestException as e:
         frappe.log_error(title="frappe_chatwoot: upstream request failed", message=str(e))
+        _write_log(request_type="API Error", endpoint=path, error=str(e)[:2000])
         raise ChatwootAPIError(f"Could not reach Chatwoot: {e}")
 
     if resp.status_code >= 400:
+        detail = _extract_error_detail(resp)
         frappe.log_error(
             title="frappe_chatwoot: Chatwoot API error",
             message=f"GET {url} -> {resp.status_code}\n{resp.text[:2000]}",
         )
-        raise ChatwootAPIError(f"Chatwoot API returned {resp.status_code} for {path}")
+        _write_log(
+            request_type="API Error",
+            endpoint=path,
+            status_code=resp.status_code,
+            payload=params,
+            error=detail,
+        )
+        raise ChatwootAPIError(f"Chatwoot: {detail}" if detail else f"Chatwoot API returned {resp.status_code} for {path}")
 
     data = resp.json()
     if ttl > 0:
@@ -137,14 +246,23 @@ def _post(path: str, payload: dict):
         )
     except requests.RequestException as e:
         frappe.log_error(title="frappe_chatwoot: upstream request failed", message=str(e))
+        _write_log(request_type="Send Message", endpoint=path, payload=payload, error=str(e)[:2000])
         raise ChatwootAPIError(f"Could not reach Chatwoot: {e}")
 
     if resp.status_code >= 400:
+        detail = _extract_error_detail(resp)
         frappe.log_error(
             title="frappe_chatwoot: Chatwoot API error",
             message=f"POST {url} -> {resp.status_code}\n{resp.text[:2000]}",
         )
-        raise ChatwootAPIError(f"Chatwoot API returned {resp.status_code} for {path}")
+        _write_log(
+            request_type="Send Message",
+            endpoint=path,
+            status_code=resp.status_code,
+            payload=payload,
+            error=detail,
+        )
+        raise ChatwootAPIError(f"Chatwoot: {detail}" if detail else f"Chatwoot API returned {resp.status_code} for {path}")
 
     # A mutation invalidates any cached reads for the affected conversation —
     # simplest correct approach given the low write volume expected (a human
@@ -186,19 +304,158 @@ def search_contacts(query: str) -> list[dict]:
     return data.get("payload") or []
 
 
-def list_messages(conversation_id: int, before: int | None = None) -> dict:
+def _drop_private_messages(messages: list[dict]) -> list[dict]:
+    """Confidentiality invariant, not a preference: Chatwoot returns
+    private/internal agent notes by default on the messages endpoint, and
+    the `filter_internal_messages=true` query param is known to be silently
+    ignored on some self-hosted Chatwoot builds. Always independently drop
+    any message where `private` is true, regardless of what the query param
+    did upstream."""
+    return [m for m in messages if not m.get("private")]
+
+
+def list_messages(conversation_id: int, before: int | None = None, after: int | None = None) -> dict:
     """Returns the raw {"meta": {...}, "payload": [...]} shape — callers get
-    both the contact/label meta and the message list in one call."""
-    params = {}
+    both the contact/label meta and the message list in one call.
+
+    `before` walks backward (older history / scroll-up UI, immutable pages
+    so safe to cache longer). `after` walks forward/ascending (incremental
+    polling) — see module docstring for the pagination/drain caveats; this
+    single-page function returns exactly what Chatwoot gives you for one
+    page. Callers needing a full incremental drain should use
+    `list_messages_incremental()` instead of calling this directly with
+    `after=`.
+
+    Both directions apply the private-message double-filter (see module
+    docstring / `_drop_private_messages`) — the `filter_internal_messages`
+    query param plus an independent client-side drop.
+    """
+    if before and after:
+        frappe.throw("list_messages: pass only one of before/after, not both")
+
+    params = {"filter_internal_messages": "true"}
     if before:
         params["before"] = before
+    if after:
+        params["after"] = after
+
     # Message lists change frequently (that's the whole point of a live
     # chat panel) — use a much shorter TTL than the default for this one
     # call, rather than the full Settings.cache_ttl_seconds, UNLESS the
     # caller is paging backward through history (before= set), where a
-    # longer cache is safe since older pages are immutable.
-    ttl = None if before else min(_cache_ttl(), 8)
-    return _get(f"/conversations/{conversation_id}/messages", params, cache_seconds=ttl)
+    # longer cache is safe since older pages are immutable. Forward/`after=`
+    # polling pages must never be cached — the whole point is to see the
+    # newest state on every poll.
+    if before:
+        ttl = min(_cache_ttl(), 8)
+    else:
+        ttl = 0
+
+    raw = _get(f"/conversations/{conversation_id}/messages", params, cache_seconds=ttl)
+    raw["payload"] = _drop_private_messages(raw.get("payload") or [])
+    return raw
+
+
+def list_messages_incremental(conversation_id: int, since_id: int | None = None) -> dict:
+    """Drain-loop incremental fetch: return every message newer than
+    `since_id` (exclusive), using the `after=` ascending cursor, bounded by
+    MAX_DRAIN_PAGES pages and DRAIN_WALL_CLOCK_SECONDS wall-clock so a
+    pathological backlog (bulk import, reconnect after downtime, a rapid
+    automation posting >100 messages) can never silently lose messages past
+    Chatwoot's 100-row-per-page cap, and can never run away indefinitely
+    either.
+
+    Returns:
+        {
+            "messages": [...],       # de-duplicated, in ascending id order
+            "meta": {...},           # meta from the LAST page fetched
+            "max_id_seen": int|None, # advance the caller's cursor to this
+            "truncated": bool,       # True if the drain hit a bound while
+                                      # a page was still full (more data may
+                                      # remain for the NEXT poll to pick up)
+            "pages_fetched": int,
+        }
+
+    An unfinished/truncated drain is always safe to resume on the next poll
+    cycle: the cursor (`max_id_seen`) only ever advances over message ids
+    we've actually confirmed we received, so no message can be skipped —
+    worst case is a bounded delay in surfacing a very large backlog, never
+    silent loss.
+    """
+    if since_id is None:
+        # No prior cursor — caller should seed one from a normal (non-
+        # incremental) load; without a cursor there is nothing to drain
+        # against, since `after=` requires a message id to anchor on.
+        raw = list_messages(conversation_id)
+        messages = raw.get("payload") or []
+        max_id = max((m.get("id") for m in messages if m.get("id") is not None), default=None)
+        return {
+            "messages": messages,
+            "meta": raw.get("meta") or {},
+            "max_id_seen": max_id,
+            "truncated": False,
+            "pages_fetched": 1,
+        }
+
+    all_messages: list[dict] = []
+    seen_ids: set = set()
+    cursor = since_id
+    last_meta: dict = {}
+    truncated = False
+    pages_fetched = 0
+    start_time = time.monotonic()
+
+    while pages_fetched < MAX_DRAIN_PAGES:
+        if time.monotonic() - start_time > DRAIN_WALL_CLOCK_SECONDS:
+            truncated = True
+            break
+
+        page = list_messages(conversation_id, after=cursor)
+        pages_fetched += 1
+        page_messages = page.get("payload") or []
+        last_meta = page.get("meta") or {}
+
+        for m in page_messages:
+            mid = m.get("id")
+            if mid is not None and mid in seen_ids:
+                continue
+            if mid is not None:
+                seen_ids.add(mid)
+            all_messages.append(m)
+
+        page_ids = [m.get("id") for m in page_messages if m.get("id") is not None]
+        if page_ids:
+            cursor = max(cursor, max(page_ids))
+
+        if len(page_messages) < CHATWOOT_PAGE_SIZE:
+            # Short page: this is the end of the currently-available delta.
+            break
+
+        # Page came back full (== CHATWOOT_PAGE_SIZE) — ambiguous, could be
+        # more. Keep draining unless we've hit a bound, in which case flag
+        # truncated so the caller/next poll knows there may be more still
+        # waiting and should NOT treat this as "caught up".
+        if pages_fetched >= MAX_DRAIN_PAGES:
+            truncated = True
+
+    all_messages.sort(key=lambda m: m.get("id") or 0)
+
+    if truncated:
+        _write_log(
+            request_type="Webhook Poll",
+            endpoint=f"/conversations/{conversation_id}/messages",
+            conversation_id=conversation_id,
+            payload={"since_id": since_id, "pages_fetched": pages_fetched, "cursor": cursor},
+            error="Message drain hit MAX_DRAIN_PAGES/wall-clock bound; resuming next poll.",
+        )
+
+    return {
+        "messages": all_messages,
+        "meta": last_meta,
+        "max_id_seen": cursor if (all_messages or cursor != since_id) else since_id,
+        "truncated": truncated,
+        "pages_fetched": pages_fetched,
+    }
 
 
 def create_message(conversation_id: int, content: str, private: bool = False) -> dict:
@@ -210,11 +467,24 @@ def create_message(conversation_id: int, content: str, private: bool = False) ->
 
 def get_profile() -> dict:
     """GET /api/v1/profile — not account-scoped. Used to fetch/refresh the
-    service agent's pubsub_token for the realtime bridge."""
+    service agent's pubsub_token for the realtime bridge, and as the
+    connectivity check behind Chatwoot Settings' "Test Connection" button."""
     settings = _settings()
     token = _api_token(settings)
     url = f"{settings.base_url}/api/v1/profile"
-    resp = requests.get(url, headers={"api_access_token": token}, timeout=HTTP_TIMEOUT)
+    try:
+        resp = requests.get(url, headers={"api_access_token": token}, timeout=HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        _write_log(request_type="API Error", endpoint="/profile", error=str(e)[:2000])
+        raise ChatwootAPIError(f"Could not reach Chatwoot: {e}")
+
     if resp.status_code >= 400:
-        raise ChatwootAPIError(f"Chatwoot /profile returned {resp.status_code}")
+        detail = _extract_error_detail(resp)
+        _write_log(
+            request_type="API Error",
+            endpoint="/profile",
+            status_code=resp.status_code,
+            error=detail,
+        )
+        raise ChatwootAPIError(f"Chatwoot: {detail}" if detail else f"Chatwoot /profile returned {resp.status_code}")
     return resp.json()

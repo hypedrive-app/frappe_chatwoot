@@ -17,3 +17,20 @@ class ChatwootSettings(Document):
         from frappe_chatwoot.utils.chatwoot_client import clear_cache
 
         clear_cache()
+
+    @frappe.whitelist()
+    def test_connection(self):
+        """Backs the "Test Connection" button in chatwoot_settings.js.
+        Calls GET /api/v1/profile with the currently-SAVED credentials (not
+        unsaved form edits — the doc must be saved first) and returns the
+        connected service agent's identity on success. Any failure raises
+        ChatwootAPIError with Chatwoot's real error detail (see
+        chatwoot_client._extract_error_detail), which the FE surfaces
+        verbatim via frappe.throw."""
+        from frappe_chatwoot.utils.chatwoot_client import get_profile
+
+        profile = get_profile()
+        return {
+            "name": profile.get("name") or profile.get("display_name"),
+            "email": profile.get("email"),
+        }

@@ -85,10 +85,18 @@ def poll_and_broadcast():
 
     try:
         conversations = cw.list_conversations(inbox_id=settings.default_inbox_id or None)
-    except cw.ChatwootAPIError:
-        # Transient upstream failure — log already happened inside the
-        # client; don't let a scheduler job raise (would show as a failed
-        # scheduled job every minute and spam error logs for a blip).
+    except cw.ChatwootAPIError as e:
+        # Transient upstream failure — the client already wrote a Chatwoot
+        # Log row and frappe.log_error for the underlying HTTP failure;
+        # here we additionally record that a poll cycle itself came up
+        # empty, so a queryable "poll health" trail exists distinct from
+        # arbitrary API calls. Don't let a scheduler job raise (would show
+        # as a failed scheduled job every minute and spam error logs).
+        cw._write_log(
+            request_type="Webhook Poll",
+            endpoint="/conversations",
+            error=f"poll_and_broadcast: conversation list fetch failed: {e}"[:2000],
+        )
         return
 
     last_seen = frappe.cache().get_value(_SNAPSHOT_CACHE_KEY) or {}
