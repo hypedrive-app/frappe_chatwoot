@@ -1,0 +1,23 @@
+[project]
+name = "frappe_chatwoot"
+authors = [
+    { name = "Hypedrive", email = "9.shivamgupta.6@gmail.com"}
+]
+description = "Live-read Chatwoot conversation integration for Frappe/CRM. Chatwoot remains the system of record — this app queries Chatwoot's REST API at view time instead of duplicating messages into a local doctype."
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = [
+    "websocket-client~=1.8.0",
+]
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+# These dependencies are only installed when developer mode is enabled
+[tool.bench.dev-dependencies]
+# package_name = "~=1.1.0"
+
+[tool.bench.frappe-dependencies]
+frappe = ">=14.0.0,<=17.0.0-dev"

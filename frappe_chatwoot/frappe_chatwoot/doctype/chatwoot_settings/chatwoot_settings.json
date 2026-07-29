@@ -1,0 +1,104 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-07-29 06:30:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "base_url",
+  "api_token",
+  "account_id",
+  "column_break_main",
+  "default_inbox_id",
+  "cache_ttl_seconds",
+  "section_break_realtime",
+  "pubsub_token"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "description": "Chatwoot base URL, no trailing slash. e.g. https://support.hypedrive.app",
+   "fieldname": "base_url",
+   "fieldtype": "Data",
+   "label": "Base URL",
+   "reqd": 1
+  },
+  {
+   "description": "User Access Token for a dedicated service agent (NOT the bot token or platform token — both are rejected by conversation read endpoints). Sent as the api_access_token header.",
+   "fieldname": "api_token",
+   "fieldtype": "Password",
+   "label": "API Token",
+   "length": 300,
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "account_id",
+   "fieldtype": "Int",
+   "label": "Account ID",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Optional. Restrict conversation queries to this inbox (e.g. the WhatsApp inbox). Leave blank to search across all inboxes on the account.",
+   "fieldname": "default_inbox_id",
+   "fieldtype": "Int",
+   "label": "Default Inbox ID"
+  },
+  {
+   "default": "20",
+   "description": "Self-imposed cache TTL for live Chatwoot reads (Chatwoot exposes no rate-limit headers — see README). Applies to conversation list/detail and message list reads.",
+   "fieldname": "cache_ttl_seconds",
+   "fieldtype": "Int",
+   "label": "Cache TTL (seconds)"
+  },
+  {
+   "fieldname": "section_break_realtime",
+   "fieldtype": "Section Break",
+   "label": "Realtime"
+  },
+  {
+   "description": "Cached from the service agent's /api/v1/profile response (pubsub_token field). Used for the ActionCable RoomChannel subscription if/when a persistent WS bridge is enabled. Refreshed automatically by the poll bridge on auth failure.",
+   "fieldname": "pubsub_token",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Pubsub Token (cached)",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-07-29 06:30:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe Chatwoot",
+ "name": "Chatwoot Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

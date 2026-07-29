@@ -1,0 +1,17 @@
+include MANIFEST.in
+include *.json
+include *.md
+include *.py
+include *.txt
+recursive-include frappe_chatwoot *.css
+recursive-include frappe_chatwoot *.csv
+recursive-include frappe_chatwoot *.html
+recursive-include frappe_chatwoot *.ico
+recursive-include frappe_chatwoot *.js
+recursive-include frappe_chatwoot *.json
+recursive-include frappe_chatwoot *.md
+recursive-include frappe_chatwoot *.png
+recursive-include frappe_chatwoot *.py
+recursive-include frappe_chatwoot *.svg
+recursive-include frappe_chatwoot *.txt
+recursive-exclude frappe_chatwoot *.pyc
