@@ -123,6 +123,24 @@ jobs:
         env:
           CI: "Yes"
 
+      - name: Probe cache round-trip
+        working-directory: /home/runner/frappe-bench
+        continue-on-error: true
+        run: |
+          bench --site test_site console <<'PY'
+          import frappe, json
+          c = frappe.cache()
+          print("CACHE_CLASS:", type(c).__name__)
+          print("redis_cache conf:", frappe.local.conf.get("redis_cache"))
+          try:
+              print("connected:", c.connected())
+          except Exception as e:
+              print("connected: raised", e)
+          c.set_value("probe:key", json.dumps({"a": 1}), expires_in_sec=20)
+          print("get_value ->", c.get_value("probe:key"))
+          print("local.cache keys:", [k for k in list(frappe.local.cache)[:5]])
+          PY
+
       - name: Run Tests
         working-directory: /home/runner/frappe-bench
         run: |
