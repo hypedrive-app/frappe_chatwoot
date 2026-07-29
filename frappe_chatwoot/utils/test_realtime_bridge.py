@@ -40,6 +40,10 @@ class TestPollAndBroadcast(FrappeTestCase):
     @patch("frappe_chatwoot.utils.chatwoot_client.list_conversations")
     def test_broadcasts_only_changed_conversations(self, mock_list, mock_publish):
         _configure_settings(enabled=1)
+        # Document.save() above emits frappe's own doc_update/list_update
+        # realtime events, which this module-level patch would otherwise count
+        # as broadcasts. Only the calls made from here on are ours.
+        mock_publish.reset_mock()
         mock_list.return_value = [
             {"id": 1, "inbox_id": 10, "updated_at": 100},
             {"id": 2, "inbox_id": 10, "updated_at": 200},
@@ -94,6 +98,9 @@ class TestPollAndBroadcast(FrappeTestCase):
     @patch("frappe_chatwoot.utils.chatwoot_client.list_conversations")
     def test_falls_back_to_last_activity_at_when_updated_at_missing(self, mock_list, mock_publish):
         _configure_settings(enabled=1)
+        # See test_broadcasts_only_changed_conversations: drop the save()'s own
+        # doc_update event before counting ours.
+        mock_publish.reset_mock()
         mock_list.return_value = [{"id": 5, "inbox_id": 10, "last_activity_at": 999}]
 
         realtime_bridge.poll_and_broadcast()
