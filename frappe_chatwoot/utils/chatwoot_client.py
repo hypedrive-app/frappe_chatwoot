@@ -235,6 +235,10 @@ def _get(path: str, params: dict | None = None, *, cache_seconds: int | None = N
     data = resp.json()
     if ttl > 0:
         frappe.cache().set_value(cache_key, json.dumps(data), expires_in_sec=ttl)
+        import os as _os
+        if _os.environ.get("CHATWOOT_CACHE_PROBE"):
+            print("PROBE _get wrote ttl=%s key=%s readback=%r" % (
+                ttl, cache_key, frappe.cache().get_value(cache_key)))
     return data
 
 

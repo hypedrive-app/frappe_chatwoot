@@ -148,3 +148,4 @@ jobs:
           bench --site test_site run-tests --app frappe_chatwoot
         env:
           TYPE: server
+          CHATWOOT_CACHE_PROBE: "1"
