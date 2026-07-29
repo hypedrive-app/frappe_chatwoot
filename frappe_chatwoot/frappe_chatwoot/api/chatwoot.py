@@ -26,15 +26,24 @@ from frappe_chatwoot.utils import chatwoot_client as cw
 ALLOWED_ROLES = ["System Manager", "Sales Manager", "Sales User"]
 
 
+def validate_role():
+    """Role gate only — the part of validate_access that does not need a
+    reference doc. Split out so the conversation_id-keyed endpoints
+    (get_messages/get_new_messages/send_message), which have no reference-doc
+    context to check, still enforce the role allowlist when called directly
+    via /api/method/ instead of through crm.api.chatwoot's wrapper."""
+    user_roles = frappe.get_roles(frappe.session.user)
+    if not any(role in user_roles for role in ALLOWED_ROLES) and frappe.session.user != "Administrator":
+        frappe.throw("Not permitted to access Chatwoot conversations", frappe.PermissionError)
+
+
 def validate_access(reference_doctype: str, reference_name: str, permtype: str = "read"):
     """Same shape as crm.api.whatsapp.validate_access: role gate + document-level
     permission check. Raises frappe.PermissionError on failure."""
     if not reference_doctype or not reference_name:
         frappe.throw("reference_doctype and reference_name are required")
 
-    user_roles = frappe.get_roles(frappe.session.user)
-    if not any(role in user_roles for role in ALLOWED_ROLES) and frappe.session.user != "Administrator":
-        frappe.throw("Not permitted to access Chatwoot conversations", frappe.PermissionError)
+    validate_role()
 
     reference_doc = frappe.get_doc(reference_doctype, reference_name)
     if not reference_doc.has_permission(permtype):
@@ -129,12 +138,14 @@ def _annotate_direction(messages: list[dict]) -> list[dict]:
 
 @frappe.whitelist()
 def get_messages(conversation_id: int, before: int = None) -> dict:
-    """Live message page for one conversation. Caller must already know the
-    conversation_id (from get_conversations_for_contact) — this function does
-    not itself re-validate reference-doc access since a conversation_id alone
-    carries no reference-doc context; callers in a CRM context should call
-    get_conversations_for_contact first (which does check access) and only
-    ever pass through conversation_ids it returned."""
+    """Live message page for one conversation. Enforces the role allowlist, but
+    cannot check reference-doc access on its own — a conversation_id alone
+    carries no reference-doc context. Callers that HAVE that context must bind
+    the conversation to it before calling: crm.api.chatwoot does this in
+    _validate_conversation_ownership, which confirms the id belongs to the
+    reference doc's own conversations. Use that wrapper from CRM rather than
+    calling this directly."""
+    validate_role()
     if not is_chatwoot_enabled():
         frappe.throw("Chatwoot integration is not enabled")
     conversation_id = frappe.utils.cint(conversation_id)
@@ -155,7 +166,11 @@ def get_new_messages(conversation_id: int, since_id: int = None) -> dict:
     Callers should persist `max_id_seen` and pass it back as `since_id` on
     the next poll. `truncated=True` means the drain hit its page/time bound
     with more data potentially still pending — call again immediately (or on
-    the very next poll tick) rather than treating this as caught-up."""
+    the very next poll tick) rather than treating this as caught-up.
+
+    Role-gated only — see get_messages' docstring on why reference-doc access
+    must be bound by the caller (crm.api.chatwoot._validate_conversation_ownership)."""
+    validate_role()
     if not is_chatwoot_enabled():
         frappe.throw("Chatwoot integration is not enabled")
     conversation_id = frappe.utils.cint(conversation_id)
@@ -167,6 +182,9 @@ def get_new_messages(conversation_id: int, since_id: int = None) -> dict:
 
 @frappe.whitelist()
 def send_message(conversation_id: int, content: str) -> dict:
+    """Role-gated only — see get_messages' docstring on why reference-doc access
+    must be bound by the caller (crm.api.chatwoot._validate_conversation_ownership)."""
+    validate_role()
     if not is_chatwoot_enabled():
         frappe.throw("Chatwoot integration is not enabled")
     if not content or not content.strip():

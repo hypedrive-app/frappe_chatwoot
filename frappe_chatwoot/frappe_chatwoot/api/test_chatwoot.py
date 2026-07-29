@@ -180,6 +180,46 @@ class TestChatwootApiSendMessageValidation(FrappeTestCase):
         mock_create.assert_called_once_with(1, "hello world")
 
 
+class TestConversationEndpointsRoleGate(FrappeTestCase):
+    """The conversation_id-keyed endpoints have no reference-doc context to
+    check, but must still enforce the role allowlist so they are not an
+    unguarded /api/method/ path around crm.api.chatwoot's ownership check."""
+
+    def setUp(self):
+        _configure_settings(enabled=1)
+
+    def tearDown(self):
+        settings = frappe.get_single("Chatwoot Settings")
+        settings.enabled = 0
+        settings.save()
+
+    def test_get_messages_rejects_user_without_sales_role(self):
+        with patch("frappe.get_roles", return_value=["Guest"]):
+            with patch.object(frappe.session, "user", "guest@example.com"):
+                with self.assertRaises(frappe.PermissionError):
+                    api.get_messages(1)
+
+    def test_get_new_messages_rejects_user_without_sales_role(self):
+        with patch("frappe.get_roles", return_value=["Guest"]):
+            with patch.object(frappe.session, "user", "guest@example.com"):
+                with self.assertRaises(frappe.PermissionError):
+                    api.get_new_messages(1)
+
+    def test_send_message_rejects_user_without_sales_role(self):
+        with patch("frappe.get_roles", return_value=["Guest"]):
+            with patch.object(frappe.session, "user", "guest@example.com"):
+                with self.assertRaises(frappe.PermissionError):
+                    api.send_message(1, "hello")
+
+    @patch("frappe_chatwoot.utils.chatwoot_client.create_message")
+    def test_send_message_allowed_for_sales_user(self, mock_create):
+        mock_create.return_value = {"id": 1}
+        with patch("frappe.get_roles", return_value=["Sales User"]):
+            with patch.object(frappe.session, "user", "sales@example.com"):
+                api.send_message(1, "hello")
+        mock_create.assert_called_once_with(1, "hello")
+
+
 class TestChatwootApiClearCache(FrappeTestCase):
     def test_clear_cache_requires_system_manager(self):
         with patch("frappe.get_roles", return_value=["Sales User"]):
