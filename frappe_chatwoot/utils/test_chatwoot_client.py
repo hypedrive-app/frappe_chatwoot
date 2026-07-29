@@ -77,9 +77,14 @@ class TestChatwootClientCaching(FrappeTestCase):
 
     @patch("frappe_chatwoot.utils.chatwoot_client.requests.get")
     def test_cache_hit_avoids_second_http_call(self, mock_get):
+        import json as _json
         mock_get.return_value = _mock_response(200, {"data": {"payload": []}})
 
         cw.list_conversations()
+        _k = cw._cache_key("get", "/conversations", _json.dumps({"page": 1, "status": "all"}, sort_keys=True))
+        print("PROBE key:", _k)
+        print("PROBE after first call, get_value ->", repr(frappe.cache().get_value(_k)))
+        print("PROBE ttl:", cw._cache_ttl())
         cw.list_conversations()
 
         self.assertEqual(mock_get.call_count, 1)
