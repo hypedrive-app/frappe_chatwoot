@@ -113,7 +113,8 @@ def poll_and_broadcast():
 
     if changed:
         last_seen.update(changed)
-        frappe.cache().set_value(_SNAPSHOT_CACHE_KEY, last_seen, expires_in_sec=86400)
+        # Same v15 shadowing trap as the read cache — see cw._set_cached.
+        cw._set_cached(_SNAPSHOT_CACHE_KEY, last_seen, 86400)
 
 
 def _broadcast_conversation_update(conversation: dict):

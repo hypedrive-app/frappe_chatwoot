@@ -102,6 +102,22 @@ def _cache_key(*parts) -> str:
     return ":".join([CACHE_PREFIX, *[str(p) for p in parts]])
 
 
+def _set_cached(cache_key: str, value, ttl: int):
+    """Write a TTL'd cache entry that a later read can actually see.
+
+    On Frappe v15, `get_value` memoises a miss by writing `None` into
+    `frappe.local.cache`, while `set_value` with `expires_in_sec` writes ONLY to
+    redis and deliberately skips that same in-process dict. Since `get_value`
+    checks the dict first and returns whatever it finds, the `None` left by the
+    miss shadows the value we just stored in redis — every read is a miss and
+    nothing is ever cached within a request. Evict the stale in-process entry so
+    the next read falls through to redis.
+    """
+    cache = frappe.cache()
+    cache.set_value(cache_key, value, expires_in_sec=ttl)
+    frappe.local.cache.pop(cache.make_key(cache_key), None)
+
+
 def clear_cache():
     """Drop every frappe_chatwoot cache key. Called on Settings save and
     exposed as a whitelisted admin action for manual invalidation."""
@@ -234,16 +250,7 @@ def _get(path: str, params: dict | None = None, *, cache_seconds: int | None = N
 
     data = resp.json()
     if ttl > 0:
-        frappe.cache().set_value(cache_key, json.dumps(data), expires_in_sec=ttl)
-        import os as _os
-        if _os.environ.get("CHATWOOT_CACHE_PROBE"):
-            _c = frappe.cache()
-            _mk = _c.make_key(cache_key)
-            print("PROBE in_local=%s local_val=%r redis_raw=%r gv=%r" % (
-                _mk in frappe.local.cache,
-                frappe.local.cache.get(_mk),
-                _c.get(_mk),
-                _c.get_value(cache_key)))
+        _set_cached(cache_key, json.dumps(data), ttl)
     return data
 
 
