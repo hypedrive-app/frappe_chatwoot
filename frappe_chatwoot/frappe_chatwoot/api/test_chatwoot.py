@@ -195,19 +195,22 @@ class TestConversationEndpointsRoleGate(FrappeTestCase):
 
     def test_get_messages_rejects_user_without_sales_role(self):
         with patch("frappe.get_roles", return_value=["Guest"]):
-            with patch.object(frappe.session, "user", "guest@example.com"):
+            with patch.object(frappe, "session") as mock_session:
+                mock_session.user = "guest@example.com"
                 with self.assertRaises(frappe.PermissionError):
                     api.get_messages(1)
 
     def test_get_new_messages_rejects_user_without_sales_role(self):
         with patch("frappe.get_roles", return_value=["Guest"]):
-            with patch.object(frappe.session, "user", "guest@example.com"):
+            with patch.object(frappe, "session") as mock_session:
+                mock_session.user = "guest@example.com"
                 with self.assertRaises(frappe.PermissionError):
                     api.get_new_messages(1)
 
     def test_send_message_rejects_user_without_sales_role(self):
         with patch("frappe.get_roles", return_value=["Guest"]):
-            with patch.object(frappe.session, "user", "guest@example.com"):
+            with patch.object(frappe, "session") as mock_session:
+                mock_session.user = "guest@example.com"
                 with self.assertRaises(frappe.PermissionError):
                     api.send_message(1, "hello")
 
@@ -215,7 +218,8 @@ class TestConversationEndpointsRoleGate(FrappeTestCase):
     def test_send_message_allowed_for_sales_user(self, mock_create):
         mock_create.return_value = {"id": 1}
         with patch("frappe.get_roles", return_value=["Sales User"]):
-            with patch.object(frappe.session, "user", "sales@example.com"):
+            with patch.object(frappe, "session") as mock_session:
+                mock_session.user = "sales@example.com"
                 api.send_message(1, "hello")
         mock_create.assert_called_once_with(1, "hello")
 
