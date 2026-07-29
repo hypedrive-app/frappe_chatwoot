@@ -304,6 +304,18 @@ def search_contacts(query: str) -> list[dict]:
     return data.get("payload") or []
 
 
+def list_canned_responses() -> list[dict]:
+    """Chatwoot's native quick-reply feature — the equivalent of WhatsApp's
+    Meta-approved template system, but scoped to Chatwoot itself (no
+    approval workflow, no Meta round-trip; these are account-level saved
+    replies an agent picks from a `short_code` list). Live shape confirmed
+    (2026-07-29) as a bare array, matching Chatwoot's published docs exactly
+    — one of the few endpoints in this client that isn't wrapped
+    differently than documented."""
+    data = _get("/canned_responses")
+    return data if isinstance(data, list) else []
+
+
 def _drop_private_messages(messages: list[dict]) -> list[dict]:
     """Confidentiality invariant, not a preference: Chatwoot returns
     private/internal agent notes by default on the messages endpoint, and

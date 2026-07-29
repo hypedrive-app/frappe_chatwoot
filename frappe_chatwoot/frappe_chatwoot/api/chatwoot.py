@@ -195,6 +195,16 @@ def send_message(conversation_id: int, content: str) -> dict:
 
 
 @frappe.whitelist()
+def get_canned_responses() -> list[dict]:
+    """Role-gated only, same as send_message — canned responses are an
+    account-level list, not bound to any specific reference doc."""
+    validate_role()
+    if not is_chatwoot_enabled():
+        return []
+    return cw.list_canned_responses()
+
+
+@frappe.whitelist()
 def clear_chatwoot_cache():
     """Admin escape hatch — manually invalidate the read cache without
     waiting out the TTL. System Manager only (frappe.whitelist default
