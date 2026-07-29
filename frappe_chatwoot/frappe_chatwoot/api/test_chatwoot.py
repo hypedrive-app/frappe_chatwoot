@@ -6,7 +6,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
-from frappe_chatwoot.api import chatwoot as api
+from frappe_chatwoot.frappe_chatwoot.api import chatwoot as api
 from frappe_chatwoot.utils import chatwoot_client as cw
 
 

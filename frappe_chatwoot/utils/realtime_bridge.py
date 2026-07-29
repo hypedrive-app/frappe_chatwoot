@@ -61,7 +61,7 @@ Payload: {"conversation_id": int, "inbox_id": int, "updated_at": int}
 Deliberately minimal (IDs + timestamp only, no message body) — mirrors
 frappe_whatsapp/CRM's own pattern (see frappe_whatsapp_pattern.md section 3):
 the realtime event is a "go refetch" signal, not the data itself. The
-frontend re-queries `frappe_chatwoot.api.chatwoot.get_messages` (the live,
+frontend re-queries `frappe_chatwoot.frappe_chatwoot.api.chatwoot.get_messages` (the live,
 authoritative source) rather than trusting anything carried on the socket.
 Site-wide fan-out (no user/room scoping), same documented-intentional
 pattern as frappe_whatsapp's own webhook.py and CRM's WhatsApp on_update
