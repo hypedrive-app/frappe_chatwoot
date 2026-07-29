@@ -237,8 +237,11 @@ def _get(path: str, params: dict | None = None, *, cache_seconds: int | None = N
         frappe.cache().set_value(cache_key, json.dumps(data), expires_in_sec=ttl)
         import os as _os
         if _os.environ.get("CHATWOOT_CACHE_PROBE"):
-            print("PROBE _get wrote ttl=%s key=%s readback=%r" % (
-                ttl, cache_key, frappe.cache().get_value(cache_key)))
+            _c = frappe.cache()
+            _mk = _c.make_key(cache_key)
+            print("PROBE mk=%r in_local=%s local_type=%s redis_direct=%r readback=%r" % (
+                _mk, _mk in frappe.local.cache, type(frappe.local.cache).__name__,
+                _c.get(_mk), _c.get_value(cache_key)))
     return data
 
 
