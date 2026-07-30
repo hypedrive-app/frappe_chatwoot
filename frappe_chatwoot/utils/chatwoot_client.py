@@ -306,19 +306,23 @@ def list_conversations(*, inbox_id=None, status="all", page=1) -> list[dict]:
     data = _get("/conversations", params)
     # Live shape: {"data": {"payload": [...]}} — no top-level "meta" counts
     # despite what Chatwoot's published docs describe.
-    return (data.get("data") or {}).get("payload") or []
+    payload = (data.get("data") or {}).get("payload") or []
+    # Scrub any embedded private note out of each conversation's preview (see
+    # _scrub_conversation_preview) — the confidentiality invariant applies to
+    # the conversation-list path too, not just the messages endpoint.
+    return [_scrub_conversation_preview(c) for c in payload]
 
 
 def get_conversation(conversation_id: int) -> dict:
     # Live shape: bare object, not wrapped in "data".
-    return _get(f"/conversations/{conversation_id}")
+    return _scrub_conversation_preview(_get(f"/conversations/{conversation_id}"))
 
 
 def get_conversations_for_contact(contact_id: int) -> list[dict]:
     # Live shape: {"payload": [...]} — no "data" wrapper here either
     # (inconsistent with /conversations above; verified live).
     data = _get(f"/contacts/{contact_id}/conversations")
-    return data.get("payload") or []
+    return [_scrub_conversation_preview(c) for c in (data.get("payload") or [])]
 
 
 def search_contacts(query: str) -> list[dict]:
@@ -346,6 +350,27 @@ def _drop_private_messages(messages: list[dict]) -> list[dict]:
     any message where `private` is true, regardless of what the query param
     did upstream."""
     return [m for m in messages if not m.get("private")]
+
+
+def _scrub_conversation_preview(conv: dict) -> dict:
+    """Conversation-list/detail objects embed the last message inline
+    (`last_non_activity_message`, and a short `messages` array) so a UI can
+    render a preview snippet without a second call. That embedded message can
+    itself be a PRIVATE agent note — Chatwoot does not filter it out of the
+    conversation payload the way it (sometimes) does on the messages endpoint.
+    Left as-is, a private note surfaces as the conversation's preview text /
+    unread snippet in the CRM list. Apply the same confidentiality invariant
+    here: strip any embedded private message so it can never leak through the
+    conversation-list path. Mutates in place and returns for convenience."""
+    if not isinstance(conv, dict):
+        return conv
+    last = conv.get("last_non_activity_message")
+    if isinstance(last, dict) and last.get("private"):
+        conv["last_non_activity_message"] = None
+    embedded = conv.get("messages")
+    if isinstance(embedded, list):
+        conv["messages"] = _drop_private_messages(embedded)
+    return conv
 
 
 def list_messages(conversation_id: int, before: int | None = None, after: int | None = None) -> dict:
@@ -492,11 +517,53 @@ def list_messages_incremental(conversation_id: int, since_id: int | None = None)
     }
 
 
+def _flag_send_status(created: dict) -> dict:
+    """Surface an outgoing message's delivery status to the caller.
+
+    Chatwoot's create-message endpoint returns HTTP 200 the instant it has
+    *queued* the message, NOT when Meta has accepted it. The returned message
+    object carries a `status` field ("sent" | "delivered" | "read" | "failed"
+    | "progress") that reflects the real outbound state. On an immediate
+    rejection (e.g. Meta #132000 template param-count mismatch, or a send
+    outside the 24h window without a template) Chatwoot writes
+    `status: "failed"` — and often a human-readable reason under
+    `content_attributes.external_error` — WHILE STILL returning 200. Without
+    inspecting the body, a failed send looks identical to a successful one to
+    the caller/FE.
+
+    We don't raise here (the message row genuinely was created in Chatwoot, and
+    a later async webhook may still flip a "progress" send to "sent"), but we
+    annotate the returned dict with an explicit `send_failed` boolean + reason
+    so the FE can render a failed state instead of a falsely-optimistic "sent".
+    """
+    if not isinstance(created, dict):
+        return created
+    status = created.get("status")
+    if status == "failed":
+        attrs = created.get("content_attributes") or {}
+        reason = attrs.get("external_error") or attrs.get("error") or "Message send failed at the WhatsApp/Meta layer."
+        created["send_failed"] = True
+        created["send_error"] = str(reason)[:500]
+        # Persist the failure for the audit trail — a 200-with-failed body is
+        # otherwise invisible in the Chatwoot Log (which only records >=400).
+        _write_log(
+            request_type="Send Message",
+            endpoint="/messages",
+            conversation_id=created.get("conversation_id"),
+            payload={"message_id": created.get("id"), "status": status},
+            error=f"Chatwoot returned status=failed: {reason}"[:2000],
+        )
+    else:
+        created["send_failed"] = False
+    return created
+
+
 def create_message(conversation_id: int, content: str, private: bool = False) -> dict:
-    return _post(
+    created = _post(
         f"/conversations/{conversation_id}/messages",
         {"content": content, "message_type": "outgoing", "private": private},
     )
+    return _flag_send_status(created)
 
 
 def toggle_conversation_status(conversation_id: int, status: str) -> dict:
@@ -559,8 +626,32 @@ def send_template_message(conversation_id: int, *, name: str, category: str, lan
     filled value, matching the same {{n}} convention used by
     frappe_whatsapp's own template body_param — verified against a real send
     (HTTP 200, status: "sent", genuinely delivered).
+
+    `processed_params` shape validation: Chatwoot has a live bug where the
+    `processed_params` object sometimes isn't forwarded to Meta, surfacing as
+    Meta error #132000 (parameter count mismatch). We can't fix Chatwoot's
+    forwarding, but we CAN reject an obviously malformed payload up-front
+    (non-dict, or values that aren't scalars/the body/header sub-shape) so a
+    caller bug doesn't reach Meta as an opaque #132000. This is a cheap
+    structural guard, not a per-template count check (we don't have the
+    template's placeholder count here without another inbox read).
     """
-    return _post(
+    if not isinstance(processed_params, dict):
+        frappe.throw("send_template_message: processed_params must be a dict")
+    # Chatwoot accepts either the flat numeric-keyed body form
+    # ({"1": "...", "2": "..."}) or the nested {"body": {...}, "header": {...}}
+    # form. Reject anything with a None/empty value that would send an empty
+    # placeholder to Meta and trigger a count mismatch.
+    for key, val in processed_params.items():
+        if isinstance(val, dict):
+            continue  # nested body/header sub-object — Chatwoot validates inner shape
+        if val is None or (isinstance(val, str) and val.strip() == ""):
+            frappe.throw(
+                f"send_template_message: template parameter {key!r} is empty — "
+                "WhatsApp/Meta rejects templates with blank placeholders (#132000)."
+            )
+
+    created = _post(
         f"/conversations/{conversation_id}/messages",
         {
             "content": "",
@@ -574,6 +665,10 @@ def send_template_message(conversation_id: int, *, name: str, category: str, lan
             },
         },
     )
+    # Same 200-with-failed-body trap as create_message: a template rejected by
+    # Meta (bad param count, template paused, etc.) comes back 200 with
+    # status=failed and the Meta reason under content_attributes. Surface it.
+    return _flag_send_status(created)
 
 
 def get_profile() -> dict:

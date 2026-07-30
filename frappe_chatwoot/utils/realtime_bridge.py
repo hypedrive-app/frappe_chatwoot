@@ -85,18 +85,24 @@ def poll_and_broadcast():
 
     try:
         conversations = cw.list_conversations(inbox_id=settings.default_inbox_id or None)
-    except cw.ChatwootAPIError as e:
-        # Transient upstream failure — the client already wrote a Chatwoot
-        # Log row and frappe.log_error for the underlying HTTP failure;
-        # here we additionally record that a poll cycle itself came up
-        # empty, so a queryable "poll health" trail exists distinct from
-        # arbitrary API calls. Don't let a scheduler job raise (would show
-        # as a failed scheduled job every minute and spam error logs).
+    except (cw.ChatwootAPIError, cw.ChatwootNotConfigured) as e:
+        # Transient upstream failure (or a mid-cycle config gap, e.g. token
+        # cleared) — the client already wrote a Chatwoot Log row and
+        # frappe.log_error for the underlying HTTP failure; here we additionally
+        # record that a poll cycle itself came up empty, so a queryable "poll
+        # health" trail exists distinct from arbitrary API calls. Don't let a
+        # scheduler job raise (would show as a failed scheduled job every minute
+        # and spam error logs).
         cw._write_log(
             request_type="Webhook Poll",
             endpoint="/conversations",
             error=f"poll_and_broadcast: conversation list fetch failed: {e}"[:2000],
         )
+        return
+    except Exception:
+        # Any other unexpected error must not surface as a recurring failed
+        # scheduled job. Log once and bail this cycle; the next tick retries.
+        frappe.log_error(title="frappe_chatwoot: poll_and_broadcast unexpected failure")
         return
 
     last_seen = frappe.cache().get_value(_SNAPSHOT_CACHE_KEY) or {}
@@ -105,11 +111,25 @@ def poll_and_broadcast():
 
     changed = {}
     for conv in conversations:
-        conv_id = str(conv["id"])
-        updated_at = conv.get("updated_at") or conv.get("last_activity_at") or 0
-        if last_seen.get(conv_id) != updated_at:
-            changed[conv_id] = updated_at
-            _broadcast_conversation_update(conv)
+        # A single malformed conversation dict (missing id, or a broadcast that
+        # throws) must NOT abort the whole poll cycle and starve every other
+        # conversation of its update for a full minute. Isolate per-conversation
+        # so one bad row is logged and skipped, not fatal.
+        try:
+            cid = conv.get("id")
+            if cid is None:
+                continue
+            conv_id = str(cid)
+            updated_at = conv.get("updated_at") or conv.get("last_activity_at") or 0
+            if last_seen.get(conv_id) != updated_at:
+                _broadcast_conversation_update(conv)
+                # Only record it as seen AFTER a successful broadcast, so a
+                # broadcast that raised gets retried next cycle instead of being
+                # silently marked delivered.
+                changed[conv_id] = updated_at
+        except Exception:
+            frappe.log_error(title="frappe_chatwoot: poll_and_broadcast conversation skipped")
+            continue
 
     if changed:
         last_seen.update(changed)
@@ -121,7 +141,11 @@ def _broadcast_conversation_update(conversation: dict):
     frappe.publish_realtime(
         "chatwoot_message",
         {
-            "conversation_id": conversation["id"],
+            # .get(), not ["id"]: the caller already guards against a missing id,
+            # but keep the broadcast contract itself robust to a partial dict so
+            # a future non-poll caller (the planned ActionCable listener) can't
+            # KeyError here either.
+            "conversation_id": conversation.get("id"),
             "inbox_id": conversation.get("inbox_id"),
             "updated_at": conversation.get("updated_at") or conversation.get("last_activity_at"),
         },
