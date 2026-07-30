@@ -29,7 +29,14 @@ No message/conversation doctype exists by design — conversations are resolved
 live via the Chatwoot Contact API (`chatwoot_contact_id` join key) or a
 phone/email search fallback, and messages are fetched live per-conversation.
 
-## API surface (`frappe_chatwoot.api.chatwoot`)
+## API surface (`frappe_chatwoot.frappe_chatwoot.api.chatwoot`)
+
+> The dotted path repeats the app name: the importable package is nested one
+> level inside the bench app directory, so `frappe_chatwoot.api.chatwoot` does
+> **not** resolve (`No module named 'frappe_chatwoot.api'`). Use the full path
+> above in `frappe.call` / `/api/method/`. CRM callers should go through
+> `crm.api.chatwoot.*`, which wraps these and adds reference-doc permission
+> checks.
 
 - `is_chatwoot_installed()` / `is_chatwoot_enabled()`
 - `get_conversations_for_contact(reference_doctype, reference_name)`

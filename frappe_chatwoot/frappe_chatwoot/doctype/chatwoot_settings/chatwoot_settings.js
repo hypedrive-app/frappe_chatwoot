@@ -30,7 +30,12 @@ frappe.ui.form.on("Chatwoot Settings", {
 				__("Clear all cached Chatwoot API responses? The next read from any open conversation panel will hit Chatwoot directly."),
 				() => {
 					frappe.call({
-						method: "frappe_chatwoot.api.chatwoot.clear_chatwoot_cache",
+						// Full path required. The importable package sits one level
+						// inside the bench app dir (frappe_chatwoot/frappe_chatwoot/api/),
+						// so the shorter `frappe_chatwoot.api.chatwoot` does NOT
+						// resolve — it fails with
+						// "No module named 'frappe_chatwoot.api'". Verified live.
+						method: "frappe_chatwoot.frappe_chatwoot.api.chatwoot.clear_chatwoot_cache",
 						freeze: true,
 						freeze_message: __("Clearing cache..."),
 						callback: (r) => {
