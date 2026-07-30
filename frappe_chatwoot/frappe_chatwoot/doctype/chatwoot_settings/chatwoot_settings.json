@@ -14,6 +14,7 @@
   "default_inbox_id",
   "cache_ttl_seconds",
   "section_break_realtime",
+  "webhook_token",
   "pubsub_token"
  ],
  "fields": [
@@ -66,6 +67,12 @@
    "fieldname": "section_break_realtime",
    "fieldtype": "Section Break",
    "label": "Realtime"
+  },
+  {
+   "description": "Shared secret for the inbound Chatwoot webhook (instant live updates). Set any random string here, then register the webhook in Chatwoot (Settings > Integrations > Webhooks, event 'Message Created') with URL: https://<crm-host>/api/method/frappe_chatwoot.frappe_chatwoot.api.chatwoot.webhook?token=<this value>. Leave blank to skip verification (the 1-min poll still covers correctness).",
+   "fieldname": "webhook_token",
+   "fieldtype": "Data",
+   "label": "Webhook Token"
   },
   {
    "description": "Cached from the service agent's /api/v1/profile response (pubsub_token field). Used for the ActionCable RoomChannel subscription if/when a persistent WS bridge is enabled. Refreshed automatically by the poll bridge on auth failure.",

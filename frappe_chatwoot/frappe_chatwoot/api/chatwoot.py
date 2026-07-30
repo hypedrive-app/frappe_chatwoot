@@ -336,3 +336,96 @@ def clear_chatwoot_cache():
         frappe.throw("Not permitted", frappe.PermissionError)
     cw.clear_cache()
     return {"ok": True}
+
+
+@frappe.whitelist(allow_guest=True)
+def webhook():
+    """Receive Chatwoot webhook events and push a realtime signal to the CRM.
+
+    This is the INSTANT replacement for the 60-second poll in
+    realtime_bridge.poll_and_broadcast — Chatwoot's own documented external
+    integration primitive. Chatwoot POSTs `message_created` (and related)
+    events here the moment they happen; we invalidate the read cache for the
+    affected conversation and fire the SAME `chatwoot_message` realtime event
+    the poll used, so the CRM frontend refetches immediately instead of waiting
+    up to a minute for the next poll tick.
+
+    Guest-open (Chatwoot calls it unauthenticated), so it is gated by a shared
+    secret: Chatwoot's Automation/webhook can't send custom auth headers, so the
+    token is carried as a `?token=` query param on the URL registered in
+    Chatwoot, and compared here in constant time. If no webhook_token is
+    configured the check is skipped (poll still covers correctness) but logged.
+    """
+    settings = frappe.get_cached_doc("Chatwoot Settings") if frappe.db.exists(
+        "DocType", "Chatwoot Settings"
+    ) else None
+    if not settings or not settings.enabled:
+        return {"ok": False, "reason": "disabled"}
+
+    if not _webhook_authentic(settings):
+        frappe.local.response["http_status_code"] = 401
+        return {"ok": False, "reason": "invalid token"}
+
+    try:
+        data = frappe.request.get_json(silent=True) or frappe.local.form_dict or {}
+    except Exception:
+        data = {}
+
+    event = data.get("event")
+    # Only conversation/message activity needs to nudge the UI. Chatwoot also
+    # sends webhook_verification / contact events we can ignore.
+    if event not in (
+        "message_created",
+        "message_updated",
+        "conversation_created",
+        "conversation_updated",
+        "conversation_status_changed",
+    ):
+        return {"ok": True, "ignored": event}
+
+    # Chatwoot nests the conversation under `conversation` for message events,
+    # or the top-level object IS the conversation for conversation events.
+    conversation = data.get("conversation") or data
+    # `id` here is Chatwoot's display_id (the human/sequential conversation id),
+    # which is exactly what the CRM uses as conversation_id everywhere else.
+    conv_id = conversation.get("id") or conversation.get("display_id")
+    inbox_id = conversation.get("inbox_id") or data.get("inbox", {}).get("id")
+
+    if conv_id is None:
+        return {"ok": True, "no_conversation": True}
+
+    # Drop the cached message page for this conversation so the frontend's
+    # immediate refetch gets fresh data instead of a stale cache hit.
+    try:
+        cw.clear_cache()
+    except Exception:
+        pass
+
+    frappe.publish_realtime(
+        "chatwoot_message",
+        {
+            "conversation_id": conv_id,
+            "inbox_id": inbox_id,
+            "updated_at": conversation.get("updated_at") or conversation.get("last_activity_at"),
+        },
+    )
+    return {"ok": True, "event": event, "conversation_id": conv_id}
+
+
+def _webhook_authentic(settings) -> bool:
+    """Constant-time shared-secret check for the guest-open webhook."""
+    import hmac
+
+    token = (settings.get("webhook_token") or "").strip() if settings.meta.has_field(
+        "webhook_token"
+    ) else ""
+    if not token:
+        frappe.log_error(
+            "Chatwoot webhook received but no webhook_token is configured — "
+            "signal accepted without verification. Set Chatwoot Settings > "
+            "Webhook Token and append ?token=<it> to the Chatwoot webhook URL.",
+            "frappe_chatwoot: unverified webhook",
+        )
+        return True
+    provided = frappe.form_dict.get("token") or frappe.get_request_header("X-Chatwoot-Token") or ""
+    return hmac.compare_digest(str(provided), str(token))
