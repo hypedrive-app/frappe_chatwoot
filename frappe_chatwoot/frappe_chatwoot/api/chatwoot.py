@@ -136,6 +136,40 @@ def _annotate_direction(messages: list[dict]) -> list[dict]:
     return messages
 
 
+def _extract_assignee(meta: dict) -> dict | None:
+    """Flatten Chatwoot's `meta.assignee` (User#push_event_data: id, name,
+    available_name, avatar_url, type, availability_status, thumbnail) down to
+    the {name, avatar} shape CRM's UI actually needs. Only sourced from the
+    messages-index `meta` — the conversations-list endpoint renders its
+    assignee through a different jbuilder partial with no avatar_url key at
+    all, so reading it from there would silently yield no avatar (verified
+    against Chatwoot source, see wa-relay's thread.ts handler for the same
+    finding). Returns None (not a dict) when unassigned, so callers can rely
+    on truthiness rather than checking for an empty name."""
+    assignee = (meta or {}).get("assignee") or {}
+    name = (assignee.get("name") or "").strip()
+    if not name:
+        return None
+    avatar = (assignee.get("thumbnail") or assignee.get("avatar_url") or "").strip()
+    return {"name": name, "avatar": avatar or None}
+
+
+def _chatwoot_url(conversation_id: int) -> str | None:
+    """Deep link to this conversation in the agent's Chatwoot dashboard:
+    {base_url}/app/accounts/{account_id}/conversations/{conversation_id}.
+    Composed server-side since both halves are server-only Settings values;
+    a caller with only a conversation_id could never assemble this
+    correctly. None if Chatwoot isn't configured (defensive; callers already
+    gate on is_chatwoot_enabled before reaching here in practice)."""
+    try:
+        settings = frappe.get_single("Chatwoot Settings")
+    except Exception:
+        return None
+    if not settings.base_url or not settings.account_id:
+        return None
+    return f"{settings.base_url}/app/accounts/{settings.account_id}/conversations/{conversation_id}"
+
+
 @frappe.whitelist()
 def get_messages(conversation_id: int, before: int = None) -> dict:
     """Live message page for one conversation. Enforces the role allowlist, but
@@ -151,11 +185,17 @@ def get_messages(conversation_id: int, before: int = None) -> dict:
     conversation_id = frappe.utils.cint(conversation_id)
     raw = cw.list_messages(conversation_id, before=frappe.utils.cint(before) if before else None)
     messages = _annotate_direction(raw.get("payload") or [])
+    meta = raw.get("meta") or {}
 
-    return {
-        "meta": raw.get("meta") or {},
+    result = {
+        "meta": meta,
         "messages": messages,
+        "chatwoot_url": _chatwoot_url(conversation_id),
     }
+    assignee = _extract_assignee(meta)
+    if assignee:
+        result["assignee"] = assignee
+    return result
 
 
 @frappe.whitelist()
@@ -192,6 +232,28 @@ def send_message(conversation_id: int, content: str) -> dict:
     conversation_id = frappe.utils.cint(conversation_id)
     result = cw.create_message(conversation_id, content.strip())
     return result
+
+
+@frappe.whitelist()
+def toggle_status(conversation_id: int, status: str) -> dict:
+    """Resolve/reopen a conversation via Chatwoot's native toggle_status
+    endpoint. Role-gated only — see get_messages' docstring on why
+    reference-doc access must be bound by the caller
+    (crm.api.chatwoot._validate_conversation_ownership)."""
+    validate_role()
+    if not is_chatwoot_enabled():
+        frappe.throw("Chatwoot integration is not enabled")
+    if status not in ("open", "resolved"):
+        frappe.throw("status must be 'open' or 'resolved'")
+    conversation_id = frappe.utils.cint(conversation_id)
+    cw.toggle_conversation_status(conversation_id, status)
+    # Chatwoot's toggle_status response shape isn't guaranteed stable enough
+    # to trust for the new status — read the conversation back so the caller
+    # gets the authoritative post-toggle state rather than an echo of what it
+    # asked for (which could be wrong if the toggle silently no-oped, e.g.
+    # already-resolved).
+    conversation = cw.get_conversation(conversation_id)
+    return {"status": conversation.get("status") or status}
 
 
 @frappe.whitelist()

@@ -499,6 +499,25 @@ def create_message(conversation_id: int, content: str, private: bool = False) ->
     )
 
 
+def toggle_conversation_status(conversation_id: int, status: str) -> dict:
+    """POST /conversations/{id}/toggle_status — Chatwoot's native
+    open/resolve/(re)pending endpoint. Only `open` and `resolved` are exposed
+    to CRM callers (see api/chatwoot.py's toggle_chatwoot_status), matching
+    the two states an agent can meaningfully action from a reply panel;
+    `pending`/`snoozed` are Chatwoot-internal states this integration doesn't
+    surface a control for.
+
+    Live response shape (verified against Chatwoot's conversations_controller):
+    bare `{"success": true, "payload": {...}}`-ish object; callers should not
+    depend on a specific shape beyond a 2xx meaning the toggle took effect —
+    the caller re-derives status from a fresh conversation read rather than
+    trusting this response body.
+    """
+    if status not in ("open", "resolved"):
+        frappe.throw(f"toggle_conversation_status: unsupported status {status!r}")
+    return _post(f"/conversations/{conversation_id}/toggle_status", {"status": status})
+
+
 def get_inbox(inbox_id: int) -> dict:
     """GET /accounts/{account_id}/inboxes/{inbox_id} — bare object, not wrapped.
 
