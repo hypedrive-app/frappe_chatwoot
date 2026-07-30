@@ -204,6 +204,67 @@ def get_canned_responses() -> list[dict]:
     return cw.list_canned_responses()
 
 
+def _default_inbox_id() -> int:
+    settings = frappe.get_single("Chatwoot Settings")
+    inbox_id = settings.default_inbox_id
+    if not inbox_id:
+        frappe.throw(
+            "Chatwoot Settings has no Default Inbox ID configured — required to look up "
+            "WhatsApp message templates."
+        )
+    return frappe.utils.cint(inbox_id)
+
+
+@frappe.whitelist()
+def get_templates(inbox_id: int = None) -> list[dict]:
+    """Chatwoot-native WhatsApp template list, sourced straight from the
+    inbox's own `message_templates` array (already synced from Meta by
+    Chatwoot — see chatwoot_client.get_inbox docstring). Role-gated only,
+    same posture as get_canned_responses: templates are account/inbox-level,
+    not bound to any specific reference doc.
+
+    `inbox_id` defaults to Chatwoot Settings.default_inbox_id when omitted."""
+    validate_role()
+    if not is_chatwoot_enabled():
+        return []
+    resolved_inbox_id = frappe.utils.cint(inbox_id) if inbox_id else _default_inbox_id()
+    return cw.list_message_templates(resolved_inbox_id)
+
+
+@frappe.whitelist()
+def send_template(
+    conversation_id: int,
+    template_name: str,
+    category: str,
+    language: str,
+    processed_params: dict | str | None = None,
+) -> dict:
+    """Send a WhatsApp template message through Chatwoot's own native
+    /messages endpoint with a `template_params` payload — this is the path
+    that works even when the conversation is outside the 24h reply window
+    (`can_reply: false`), which is the whole point of templates. Role-gated
+    only — see get_messages' docstring on why reference-doc access must be
+    bound by the caller (crm.api.chatwoot._validate_conversation_ownership)."""
+    validate_role()
+    if not is_chatwoot_enabled():
+        frappe.throw("Chatwoot integration is not enabled")
+    if not template_name:
+        frappe.throw("template_name is required")
+    if isinstance(processed_params, str):
+        processed_params = frappe.parse_json(processed_params) if processed_params else {}
+    processed_params = processed_params or {}
+
+    conversation_id = frappe.utils.cint(conversation_id)
+    result = cw.send_template_message(
+        conversation_id,
+        name=template_name,
+        category=category,
+        language=language,
+        processed_params=processed_params,
+    )
+    return result
+
+
 @frappe.whitelist()
 def clear_chatwoot_cache():
     """Admin escape hatch — manually invalidate the read cache without

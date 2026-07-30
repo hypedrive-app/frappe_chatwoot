@@ -499,6 +499,64 @@ def create_message(conversation_id: int, content: str, private: bool = False) ->
     )
 
 
+def get_inbox(inbox_id: int) -> dict:
+    """GET /accounts/{account_id}/inboxes/{inbox_id} — bare object, not wrapped.
+
+    For a genuine Chatwoot-native WhatsApp Cloud channel inbox, this includes
+    a `message_templates` array: Chatwoot's own synced copy of every
+    Meta-approved template (name, category, language, components with
+    body/header/footer/buttons, parameter_format). That array is the
+    canonical source for Chatwoot-side template sending — no separate Meta
+    Graph API call is needed here, Chatwoot already did that sync.
+
+    Cached at the default Settings TTL like other inbox-ish reads; templates
+    change rarely (only when someone edits/approves a template in Meta
+    Business Manager), so this is not a hot-write path that needs
+    cache-busting beyond the normal clear_cache() on any send.
+    """
+    return _get(f"/inboxes/{inbox_id}")
+
+
+def list_message_templates(inbox_id: int) -> list[dict]:
+    """Extract the `message_templates` array from an inbox's detail payload.
+    Returns [] if the inbox has none synced (e.g. not a WhatsApp Cloud
+    channel, or Meta sync hasn't run yet) rather than raising."""
+    inbox = get_inbox(inbox_id)
+    return inbox.get("message_templates") or []
+
+
+def send_template_message(conversation_id: int, *, name: str, category: str, language: str,
+                           processed_params: dict) -> dict:
+    """POST a WhatsApp template message via Chatwoot's own native messages
+    endpoint, using the `template_params` object Chatwoot's WhatsApp Cloud
+    channel understands natively.
+
+    Verified live (2026-07-29): this succeeds even when the conversation is
+    outside the 24h customer-service window (`can_reply: false`) — sending a
+    template is precisely how Chatwoot/WhatsApp Cloud is allowed to message a
+    contact outside that window, since Meta pre-approved the template
+    content. `processed_params` is a numeric-string-keyed dict
+    (`{"1": "value", "2": "value2"}`) mapping each body placeholder to its
+    filled value, matching the same {{n}} convention used by
+    frappe_whatsapp's own template body_param — verified against a real send
+    (HTTP 200, status: "sent", genuinely delivered).
+    """
+    return _post(
+        f"/conversations/{conversation_id}/messages",
+        {
+            "content": "",
+            "message_type": "outgoing",
+            "private": False,
+            "template_params": {
+                "name": name,
+                "category": category,
+                "language": language,
+                "processed_params": processed_params,
+            },
+        },
+    )
+
+
 def get_profile() -> dict:
     """GET /api/v1/profile — not account-scoped. Used to fetch/refresh the
     service agent's pubsub_token for the realtime bridge, and as the
